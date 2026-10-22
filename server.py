@@ -34,8 +34,16 @@ def web_search(query):
     try: url=base64.urlsafe_b64decode(encoded[2:]+'===').decode('utf-8') if encoded.startswith('a1') else url
     except Exception: pass
    title=re.sub('<.*?>','',html.unescape(link.group(2))).strip(); text=re.sub('<.*?>','',html.unescape(snippet.group(1))).strip() if snippet else ''
-   out.append({'title':title,'url':url,'snippet':text})
+   domain=urllib.parse.urlparse(url).netloc.lower().removeprefix('www.')
+   out.append({'title':title,'url':url,'domain':domain,'snippet':text})
  return out
+def ollama_state():
+ try:
+  req=urllib.request.Request(OLLAMA_URL.rstrip('/')+'/api/tags',headers={'Accept':'application/json'})
+  with urllib.request.urlopen(req,timeout=1.5) as res: data=json.load(res)
+  names={m.get('name') for m in data.get('models',[]) if isinstance(m,dict)}
+  return True, MODEL in names
+ except Exception: return False, False
 class Handler(BaseHTTPRequestHandler):
  def log_message(self,*args): pass
  def reply(self,status,data):
@@ -53,7 +61,8 @@ class Handler(BaseHTTPRequestHandler):
   p=urlparse(self.path).path
   if p=='/api/status':
    configured=bool(MODEL) if PROVIDER=='ollama' else bool(KEY and MODEL)
-   return self.reply(200,{'name':NAME,'configured':configured,'provider':PROVIDER,'model':MODEL,'search':SEARCH_ENABLED,'searchProvider':SEARCH_PROVIDER,'streaming':False})
+   reachable,model_available=ollama_state() if PROVIDER=='ollama' and configured else (False,False)
+   return self.reply(200,{'name':NAME,'configured':configured,'provider':PROVIDER,'model':MODEL,'reachable':reachable,'modelAvailable':model_available,'search':SEARCH_ENABLED,'searchProvider':SEARCH_PROVIDER,'streaming':False})
   if p=='/api/chats':
    with db() as c: rows=c.execute('SELECT id,title,updated FROM chats ORDER BY updated DESC').fetchall()
    return self.reply(200,[dict(zip(('id','title','updated'),r)) for r in rows])
@@ -124,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
     return self.reply(502,{'error':msg})
    except (urllib.error.URLError,TimeoutError): return self.reply(502,{'error':'No se pudo conectar con el proveedor. Comprueba la conexión e inténtalo de nuevo.'})
    answer=(result.get('message',{}).get('content','') if PROVIDER=='ollama' else ''.join(part.get('text','') for item in result.get('output',[]) if item.get('type')=='message' for part in item.get('content',[]) if part.get('type')=='output_text'))
-   if sources: answer += '\n\nFuentes consultadas:\n' + '\n'.join(f"- {s['title']} - {s['url']}" for s in sources)
+   if sources: answer += '\n\nFuentes consultadas:\n' + '\n'.join(f"- {s['title']} ({s.get('domain','')}) - {s['url']}" for s in sources)
    if not answer: return self.reply(502,{'error':'El proveedor no devolvió texto. Inténtalo de nuevo.'})
    with db() as c:
     c.execute('INSERT INTO messages VALUES(?,?,?,?,?)',(str(uuid.uuid4()),cid,'user',content,time.time())); c.execute('INSERT INTO messages VALUES(?,?,?,?,?)',(str(uuid.uuid4()),cid,'assistant',answer,time.time())); c.execute('UPDATE chats SET title=?,updated=? WHERE id=?',((content.splitlines()[0][:55] if chat[0]=='Nueva conversación' else chat[0]),time.time(),cid))

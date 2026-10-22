@@ -1,5 +1,5 @@
 #define MyAppName "Lumen"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.4.0"
 #define MyAppPublisher "Lumen"
 #define MyAppURL "http://localhost:8765"
 #define MyAppExeName "Lumen-Installed.bat"

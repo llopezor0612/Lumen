@@ -7,7 +7,7 @@ namespace LumenDesktop;
 
 public sealed class Form1 : Form
 {
-    private const string CurrentVersion = "1.3.0";
+    private const string CurrentVersion = "1.4.0";
     private readonly WebView2 browser = new() { Dock = DockStyle.Fill };
     private Process? server;
 
