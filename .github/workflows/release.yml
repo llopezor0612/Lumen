@@ -1,0 +1,84 @@
+name: Crear y publicar instalador de Lumen
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar la versión
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}".TrimStart('v')
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          (Get-Content Form1.cs -Raw) -replace 'CurrentVersion = "[^"]+"', ('CurrentVersion = "' + $version + '"') | Set-Content Form1.cs -Encoding utf8
+          (Get-Content installer.iss -Raw) -replace '#define MyAppVersion "[^"]+"', ('#define MyAppVersion "' + $version + '"') | Set-Content installer.iss -Encoding utf8
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Construir servidor Lumen
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pyinstaller
+          pyinstaller --noconfirm --clean --name Lumen --add-data "static;static" --add-data "system_prompt.txt;." server.py
+
+      - name: Construir aplicación de escritorio
+        shell: pwsh
+        run: dotnet publish LumenDesktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o desktop-publish
+
+      - name: Preparar estructura del instalador
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force outputs/Lumen/desktop-publish | Out-Null
+          New-Item -ItemType Directory -Force outputs/Lumen/installer-output | Out-Null
+          Copy-Item desktop-publish/LumenDesktop.exe outputs/Lumen/desktop-publish/LumenDesktop.exe -Force
+          Copy-Item installer.iss,README.md,Lumen-Installed.bat,.env.example outputs/Lumen/ -Force
+
+      - name: Instalar Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Crear instalador
+        shell: pwsh
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" outputs/Lumen/installer.iss'
+
+      - name: Calcular hash y actualizar manifiesto
+        id: manifest
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.value }}"
+          $installer = "outputs/Lumen/installer-output/Lumen-Setup-$version.exe"
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $url = "https://github.com/${{ github.repository }}/releases/download/v$version/Lumen-Setup-$version.exe"
+          @{ version=$version; url=$url; sha256=$hash } | ConvertTo-Json | Set-Content stable.json -Encoding utf8
+          "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Publicar release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Lumen ${{ steps.version.outputs.value }}
+          generate_release_notes: true
+          files: outputs/Lumen/installer-output/Lumen-Setup-${{ steps.version.outputs.value }}.exe
+
+      - name: Publicar manifiesto de actualizaciones
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stable.json
+          git commit -m "Actualizar manifiesto de Lumen ${{ steps.version.outputs.value }}" || exit 0
+          git push origin HEAD:main
